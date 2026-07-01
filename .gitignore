@@ -1,13 +1,36 @@
-# Environments
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 *.egg-info/
-.venv/
+build/
+dist/
 
-# Data and outputs — these get big and regenerate on Lambda
+# Virtual environments
+.venv/
+venv/
+env/
+
+# HuggingFace cache (if it ended up in the repo dir)
+.cache/
+hf_cache/
+models/
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Data and outputs — regenerate on Lambda, don't commit
 data/*.jsonl
 outputs/
+logs/
 !data/.gitkeep
 
-# HF cache if you ever accidentally point it here
-.cache/
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Logs
+*.log

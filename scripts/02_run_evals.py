@@ -6,29 +6,14 @@ Run benchmark-method generation on Gemma-2-9B-IT.
 Reads the corpus produced by 01_build_corpus.py, generates n samples per prompt
 in either English or Yoruba, and writes one JSONL row per generation.
 
-The "method" flag is included now (only `benchmark` valid) so that once
-`src/attacks.py` exists, we add `adversarial` as a choice and a small
-prompt-transformation step. No restructure needed.
-
 Usage from project root:
-    # Smoke test: 5 prompts, English
-    python scripts/02_run_eval.py --lang en --limit 5
-
-    # Full English run
-    python scripts/02_run_eval.py --lang en
-
-    # Full Yoruba run
-    python scripts/02_run_eval.py --lang yo
-
-    # Dry run — verify corpus filtering without loading the model
-    python scripts/02_run_eval.py --lang yo --dry-run
+    python scripts/02_run_eval.py --lang en --limit 5     # smoke test
+    python scripts/02_run_eval.py --lang en               # full English
+    python scripts/02_run_eval.py --lang yo               # full Yoruba
+    python scripts/02_run_eval.py --lang yo --dry-run     # verify corpus without model
 
 Outputs:
     outputs/responses_gemma-2-9b-it_{lang}_{method}.jsonl
-
-Dependencies:
-    pip install torch transformers tqdm
-    huggingface-cli login    # Gemma is gated; you must accept terms first
 """
 
 from __future__ import annotations
@@ -38,6 +23,7 @@ import hashlib
 import json
 import sys
 import time
+import traceback
 from pathlib import Path
 from collections import Counter
 from typing import Optional
@@ -66,7 +52,7 @@ DEFAULTS = {
     "base_seed": 42,
 }
 
-VALID_METHODS = ["benchmark"]   # "adversarial" added later when attacks.py exists
+VALID_METHODS = ["benchmark"]
 VALID_LANGS = ["en", "yo"]
 
 
@@ -88,10 +74,7 @@ def read_corpus(corpus_path: Path) -> list[dict]:
 
 
 def extract_prompt(record: dict, lang: str) -> tuple[Optional[str], Optional[str]]:
-    """
-    Return (prompt_text, source_field_name) for the requested language.
-    For Yoruba, prefer native over MT. Returns (None, None) if no valid prompt.
-    """
+    """Return (prompt_text, source_field_name) for the requested language."""
     if lang == "en":
         text = (record.get("prompt_en") or "").strip()
         return (text, "prompt_en") if text else (None, None)
@@ -109,7 +92,6 @@ def extract_prompt(record: dict, lang: str) -> tuple[Optional[str], Optional[str
 
 
 def load_done_counts(output_path: Path) -> Counter:
-    """Count completed samples per prompt_id from existing output (for resume)."""
     counts: Counter = Counter()
     if not output_path.exists():
         return counts
@@ -179,12 +161,17 @@ def generate_samples(
 ) -> list[str]:
     """Generate n samples for a single prompt using num_return_sequences."""
     messages = [{"role": "user", "content": prompt}]
-    input_ids = tokenizer.apply_chat_template(
+
+    # Two-step: format via chat template, then tokenize separately.
+    # (apply_chat_template with tokenize=True returns BatchEncoding in some
+    # transformers versions, which model.generate can't unpack.)
+    prompt_text = tokenizer.apply_chat_template(
         messages,
-        tokenize=True,
+        tokenize=False,
         add_generation_prompt=True,
-        return_tensors="pt",
-    ).to(device)
+    )
+    inputs = tokenizer(prompt_text, return_tensors="pt").to(device)
+    input_ids = inputs["input_ids"]
 
     torch.manual_seed(seed)
     if device == "cuda":
@@ -192,7 +179,7 @@ def generate_samples(
 
     with torch.no_grad():
         outputs = model.generate(
-            input_ids,
+            **inputs,
             num_return_sequences=n_samples,
             do_sample=True,
             temperature=temperature,
@@ -324,7 +311,11 @@ def main():
             continue
         except Exception as e:
             n_errors += 1
-            print(f"\n  ERROR on {prompt_id}: {type(e).__name__}: {e}")
+            print(f"\n  ERROR on {prompt_id}:")
+            traceback.print_exc()
+            if n_errors >= 3 and n_written == 0:
+                print("\n3 errors before any successful generation — aborting.")
+                sys.exit(1)
             continue
 
         for sample_idx, response in enumerate(responses):
