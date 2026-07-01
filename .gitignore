@@ -1,0 +1,13 @@
+# Environments
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+
+# Data and outputs — these get big and regenerate on Lambda
+data/*.jsonl
+outputs/
+!data/.gitkeep
+
+# HF cache if you ever accidentally point it here
+.cache/
