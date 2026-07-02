@@ -11,6 +11,7 @@ dist/
 .venv/
 venv/
 env/
+.env
 
 # HuggingFace cache (if it ended up in the repo dir)
 .cache/
