@@ -25,7 +25,6 @@ models/
 
 # Data and outputs — regenerate on Lambda, don't commit
 data/*.jsonl
-outputs/
 logs/
 !data/.gitkeep
 
