@@ -25,9 +25,7 @@ models/
 .DS_Store
 
 # Data and outputs — regenerate on Lambda, don't commit
-data/*.jsonl
 logs/
-!data/.gitkeep
 
 # Notebook checkpoints
 .ipynb_checkpoints/
