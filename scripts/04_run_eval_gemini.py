@@ -10,9 +10,12 @@ Design choices:
   - BLOCK_NONE safety settings across all 4 categories, to measure the
     MODEL's refusal behavior rather than the API content filter.
     (Any residual filtering at other layers is recorded via finish_reason.)
+  - thinking_budget=128 (Gemini 2.5 models are thinking-only, so we set a
+    minimal reasoning budget; most of max_output_tokens goes to the
+    visible response).
   - n samples per prompt via loop (candidate_count > 1 is unreliable on
     many Gemini models).
-  - Rate-limit handling: exponential backoff on 429/quota errors.
+  - Retry with exponential backoff on rate limits AND transient 5xx errors.
   - Resumability: skips prompts already having >= n samples in the output.
 
 Requires:
@@ -29,7 +32,6 @@ Usage from project root:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -38,9 +40,16 @@ import traceback
 from collections import Counter
 from pathlib import Path
 from typing import Optional
-from dotenv import load_dotenv
 
 from tqdm.auto import tqdm
+
+# Load .env if present (for GEMINI_API_KEY). Optional — script still works
+# if python-dotenv isn't installed and the var is exported directly.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +67,7 @@ DEFAULTS = {
     "n_samples": 5,
     "temperature": 0.7,
     "top_p": 0.95,
-    "max_new_tokens": 256,
+    "max_new_tokens": 512,   # 128 thinking + ~384 response for 2.5 models
     "base_seed": 42,
 }
 
@@ -124,7 +133,6 @@ def append_jsonl(record: dict, output_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Gemini client
 # ---------------------------------------------------------------------------
-load_dotenv()
 
 def get_client_and_safety():
     """Lazy import so `--help` doesn't require the SDK installed."""
@@ -134,6 +142,8 @@ def get_client_and_safety():
     except ImportError:
         sys.exit("ERROR: google-genai not installed. Run: pip install google-genai")
 
+    # Client picks up GEMINI_API_KEY from env by default.
+    # (No need to pass api_key explicitly if it's in the environment.)
     client = genai.Client()
 
     safety_settings = [
@@ -158,9 +168,13 @@ def get_client_and_safety():
     return client, types, safety_settings
 
 
-def _is_rate_limit_error(exc: Exception) -> bool:
+def _is_retryable_error(exc: Exception) -> bool:
+    """Match both rate-limit and transient 5xx server errors."""
     msg = str(exc).lower()
-    return any(k in msg for k in ("429", "quota", "rate limit", "resource_exhausted"))
+    return any(k in msg for k in (
+        "429", "quota", "rate limit", "resource_exhausted",         # rate limits
+        "500", "502", "503", "unavailable", "internal", "server",   # transient
+    ))
 
 
 def generate_samples(
@@ -179,11 +193,14 @@ def generate_samples(
         top_p=top_p,
         max_output_tokens=max_new_tokens,
         safety_settings=safety_settings,
+        # Gemini 2.5 models are thinking-only; use a small budget (128 tokens)
+        # so most of max_output_tokens goes to the visible response.
+        thinking_config=types_module.ThinkingConfig(thinking_budget=128),
     )
 
     results: list[tuple[str, str]] = []
     for i in range(n_samples):
-        # Retry loop for rate limits (waits: 4, 8, 16, 32, 64s)
+        # Retry loop (waits: 4, 8, 16, 32s)
         for attempt in range(5):
             try:
                 response = client.models.generate_content(
@@ -202,15 +219,15 @@ def generate_samples(
                 results.append((text.strip(), finish_reason))
                 break
             except Exception as e:
-                if _is_rate_limit_error(e) and attempt < 4:
+                if _is_retryable_error(e) and attempt < 4:
                     wait = 2 ** (attempt + 2)   # 4, 8, 16, 32
-                    print(f"    rate limited, sleeping {wait}s...")
+                    print(f"    retryable error ({type(e).__name__}), sleeping {wait}s...")
                     time.sleep(wait)
                     continue
                 results.append(("", f"error:{type(e).__name__}"))
                 break
         else:
-            results.append(("", "rate_limit_exceeded"))
+            results.append(("", "retries_exhausted"))
     return results
 
 
@@ -284,6 +301,7 @@ def main():
         "top_p": args.top_p,
         "max_new_tokens": args.max_new_tokens,
         "safety": "BLOCK_NONE",
+        "thinking_budget": 128,
     }
 
     n_errors = 0
