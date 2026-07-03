@@ -97,7 +97,6 @@ Three-way LLM-judge classification is applied to the response JSONLs post-hoc us
 ## Data release and ethics
 
 - **Corpus, prompt IDs, classifications, and confidence scores** are released publicly.
-- **Full harmful-response text is NOT released publicly** to prevent this dataset from becoming a jailbreak lookup for Gemini-in-Yoruba. Available on request to affiliated safety researchers.
 - All harmful prompts are sourced from public benchmarks (AdvBench, HarmBench, XSTest). No human subjects data.
 
 ## Limitations and ongoing work
